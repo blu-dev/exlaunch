@@ -46,6 +46,7 @@ namespace exl::util {
 
         static uintptr_t HookFuncCommon(uintptr_t hook, uintptr_t callback, bool do_trampoline = false);
         static void InlineHook(uintptr_t hook, uintptr_t callback, bool is_extended = false);
+        static uintptr_t HookFuncFlexible(uintptr_t hook, uintptr_t callback, bool override_existing = false);
         static Result AllocForTrampoline(uint32_t** rx, uint32_t** rw);
 
         public:
@@ -130,6 +131,55 @@ namespace exl::util {
 
         static void InlineHook(uintptr_t hook, ExInlineCallback callback) {
             InlineHook(hook, reinterpret_cast<uintptr_t>(callback), true);
+        }
+
+        template<typename Func> requires RealFunction<Func> || std::is_member_function_pointer_v<Func>
+        static Func FlexibleHook(Func hook, Func callback) {
+
+            /* Workaround for being unable to cast member functions. */
+            /* Probably some horrible UB here? */
+            uintptr_t hookp;
+            uintptr_t callbackp;
+            memcpy(&hookp, &hook, sizeof(hookp));
+            memcpy(&callbackp, &callback, sizeof(callbackp));
+
+            uintptr_t trampoline = HookFuncFlexible(hookp, callbackp);
+
+            /* Workaround for being unable to cast member functions. */
+            /* Probably some horrible UB here? */
+            Func ret;
+            memcpy(&ret, &trampoline, sizeof(trampoline));
+
+            return ret;
+        }
+
+        static void SetDisableFlexibleHook(uintptr_t hook, bool disable);
+
+        template<typename Func> requires RealFunction<Func> || std::is_member_function_pointer_v<Func>
+        static void SetDisableFlexibleHook(Func hook, bool disable) {
+            uintptr_t hookp;
+            memcpy(&hookp, &hook, sizeof(hookp));
+
+            SetDisableFlexibleHook(hookp, disable);
+        }
+
+        template<typename Func> requires RealFunction<Func>
+        static Func FlexibleHook(uintptr_t hook, Func callback) {
+            return FlexibleHook(reinterpret_cast<Func>(hook), callback);
+        }
+        
+        template<typename Func> requires RealFunction<Func>
+        static Func FlexibleHook(uintptr_t hook, uintptr_t callback) {
+            return FlexibleHook(reinterpret_cast<Func>(hook), reinterpret_cast<Func>(callback));
+        }
+
+        template<typename Func1, typename Func2> 
+        requires 
+        /* Both funcs are member pointers. */
+        std::is_member_function_pointer_v<Func1> && std::is_member_function_pointer_v<Func2>
+        /* TODO: ensure safety that Func2 can be casted to Func1 */
+        static Func1 FlexibleHook(Func1 hook, Func2 callback) {
+            return FlexibleHook(reinterpret_cast<Func1>(hook), reinterpret_cast<Func1>(callback));
         }
     };
 };

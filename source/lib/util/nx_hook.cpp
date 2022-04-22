@@ -74,10 +74,17 @@ namespace exl::util {
         constexpr size_t InlineHookMax = 1;
         constexpr size_t InlineHookPoolSize = InlineHookSize * InlineHookMax;
 
+        // Flexible hook map structure (can't use std)
+        struct FlexibleHookEntry {
+            uintptr_t key;
+            size_t hook_index;
+        };
+
         extern "C" {
             extern const u8  InlineHandler[InlineHookSize];
             extern const u64 InlineHandlerImpl;
             extern const u64 ExInlineHandlerImpl;
+            extern const u64 FlexibleHandlerImpl;
         }
 
         typedef uint32_t* __restrict* __restrict instruction;
@@ -530,6 +537,35 @@ namespace exl::util {
 Jit Hook::s_HookJit;
 Jit Hook::s_InlineHookJit;
 size_t Hook::s_UsedInlineHooks;
+static FlexibleHookEntry s_FlexibleHooks[InlineHookMax];
+
+size_t get_flex_hook_index(uintptr_t hook) {
+    size_t search_idx = static_cast<size_t>((hook >> 2) % InlineHookMax);
+    size_t search_idx_end = (search_idx + InlineHookMax - 1) % InlineHookMax;
+    do {
+        if (s_FlexibleHooks[search_idx].key == hook) {
+            return s_FlexibleHooks[search_idx].hook_index;
+        } else if (s_FlexibleHooks[search_idx].key == InlineHookMax) {
+            return InlineHookMax;
+        }
+        search_idx = (search_idx + 1) % InlineHookMax;
+    } while (search_idx != search_idx_end);
+    return InlineHookMax;
+}
+
+bool insert_flex_hook(uintptr_t hook, size_t hook_idx) {
+    size_t insert_idx = static_cast<size_t>((hook >> 2) % InlineHookMax);
+    size_t insert_idx_end = (insert_idx + InlineHookMax - 1) % InlineHookMax;
+    do {
+        if (s_FlexibleHooks[insert_idx].hook_index == InlineHookMax) {
+            s_FlexibleHooks[insert_idx].hook_index = hook_idx;
+            s_FlexibleHooks[insert_idx].key = hook;
+            return true;
+        }
+        insert_idx = (insert_idx + 1) % InlineHookMax;
+    } while (insert_idx != insert_idx_end);
+    return false;
+}
 //static nn::os::MutexType hookMutex;
 
 //-------------------------------------------------------------------------
@@ -559,6 +595,10 @@ void Hook::Initialize() {
     R_ABORT_UNLESS(jitCreate(&s_InlineHookJit, (void*)ALIGN_DOWN(mem.addr + mem.size - InlineHookPoolSize, PAGE_SIZE), InlineHookPoolSize));
 
     s_UsedInlineHooks = 0;
+    for (size_t i = 0; i < InlineHookMax; i++) {
+        s_FlexibleHooks[i].hook_index = InlineHookMax;
+        s_FlexibleHooks[i].key = 0;
+    }
 }
 
 //-------------------------------------------------------------------------
@@ -683,6 +723,79 @@ void Hook::InlineHook(uintptr_t hook, uintptr_t callback, bool is_extended) {
     jitTransitionToExecutable(&s_InlineHookJit);
 
     s_UsedInlineHooks++;
+}
+
+uintptr_t Hook::HookFuncFlexible(uintptr_t hook, uintptr_t callback, bool override) {
+    size_t hook_index = get_flex_hook_index(hook);
+    if (hook_index != InlineHookMax) {
+        if (!override)
+            return 0;
+
+        R_ABORT_UNLESS(jitTransitionToWritable(&s_InlineHookJit));
+
+        auto& rw_entries = *reinterpret_cast<std::array<InlineHookEntry, InlineHookMax>*>(s_InlineHookJit.rw_addr);
+        auto& rw = rw_entries[hook_index];
+
+        rw.m_Callback = reinterpret_cast<void*>(callback);
+        uintptr_t trampoline = reinterpret_cast<uintptr_t>(rw.m_Trampoline);
+
+        R_ABORT_UNLESS(jitTransitionToExecutable(&s_InlineHookJit));
+        return trampoline;
+    }
+
+    R_ABORT_UNLESS(jitTransitionToExecutable(&s_HookJit));
+
+    auto handler_start = (uintptr_t)&InlineHandler;
+    auto handler_end = handler_start + InlineHookHandlerSize;
+
+    EXL_ASSERT(*reinterpret_cast<u32*>(handler_end) == 0x5F4C5845, "Invalid handler size");
+
+    EXL_ASSERT(InlineHookSize > s_UsedInlineHooks, "Number of inline hooks has exceeded the maximum");
+
+    auto& rx_entries = *reinterpret_cast<std::array<InlineHookEntry, InlineHookMax>*>(s_InlineHookJit.rx_addr);
+    auto& rx = rx_entries[s_UsedInlineHooks];
+
+    uintptr_t trampoline = HookFuncCommon(hook, reinterpret_cast<uintptr_t>(rx.m_Handler.data()), true);
+
+    jitTransitionToWritable(&s_InlineHookJit);
+
+    auto& rw_entries = *reinterpret_cast<std::array<InlineHookEntry, InlineHookMax>*>(s_InlineHookJit.rw_addr);
+    auto& rw = rw_entries[s_UsedInlineHooks];
+
+    std::memcpy(rw.m_Handler.data(), reinterpret_cast<const void*>(InlineHandler), InlineHookHandlerSize);
+        
+    rw.m_CurrentHandler = const_cast<void*>(reinterpret_cast<const void*>(&FlexibleHandlerImpl));
+
+    rw.m_Callback = reinterpret_cast<void*>(callback);
+    rw.m_Trampoline = reinterpret_cast<void*>(trampoline);
+
+    jitTransitionToExecutable(&s_InlineHookJit);
+
+    EXL_ASSERT(insert_flex_hook(hook, s_UsedInlineHooks++), "unable to insert flex hook");
+    return trampoline;
+}
+
+void Hook::SetDisableFlexibleHook(uintptr_t hook, bool disable) {
+    size_t hook_index = get_flex_hook_index(hook);
+    if (hook_index == InlineHookMax) {
+        return;
+    }
+    
+    R_ABORT_UNLESS(jitTransitionToWritable(&s_InlineHookJit));
+
+    auto& rw_entries = *reinterpret_cast<std::array<InlineHookEntry, InlineHookMax>*>(s_InlineHookJit.rw_addr);
+    auto& rw = rw_entries[hook_index];
+
+    uintptr_t callback = reinterpret_cast<uintptr_t>(rw.m_Callback);
+    if (disable) {
+        callback |= 1;
+    } else {
+        callback &= ~1;
+    }
+
+    rw.m_Callback = reinterpret_cast<void*>(callback);
+
+    R_ABORT_UNLESS(jitTransitionToExecutable(&s_InlineHookJit));
 }
 
 };
