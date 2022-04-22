@@ -29,6 +29,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "basic_map.hpp"
 
 #include <cstring>
 #include <type_traits>
@@ -39,14 +40,19 @@ namespace exl::util {
     concept RealFunction = std::is_function_v<T> || std::is_function_v<std::remove_pointer_t<T>> || std::is_function_v<std::remove_reference_t<T>>;
 
     class Hook {
+        public:
+
+        enum class FlexHookStyle {
+            Regular,
+            Inline,
+            ExtendedInline
+        };
+
         private:
-        static Jit s_HookJit;
-        static Jit s_InlineHookJit;
-        static size_t s_UsedInlineHooks;
 
         static uintptr_t HookFuncCommon(uintptr_t hook, uintptr_t callback, bool do_trampoline = false);
         static void InlineHook(uintptr_t hook, uintptr_t callback, bool is_extended = false);
-        static uintptr_t HookFuncFlexible(uintptr_t hook, uintptr_t callback, bool override_existing = false);
+        static uintptr_t HookFuncFlexible(uintptr_t hook, uintptr_t callback, FlexHookStyle style = FlexHookStyle::Regular, bool override_existing = false);
         static Result AllocForTrampoline(uint32_t** rx, uint32_t** rw);
 
         public:

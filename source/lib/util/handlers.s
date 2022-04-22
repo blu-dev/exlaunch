@@ -176,6 +176,30 @@ FlexibleHandlerDisabled:
     br x16
 CODE_END
 
+CODE_BEGIN FlexibleInlineHandlerImpl
+    sub sp, sp, #0x10
+    str x0, [sp]
+    ldr x0, [x17, #0x8]
+    and x0, x0, #0x1
+    cbnz x0, FlexibleHandlerDisabled
+
+    ldr x0, [sp]
+    add sp, sp, #0x10
+    b InlineHandlerImpl
+CODE_END
+
+CODE_BEGIN FlexibleExInlineHandlerImpl
+    sub sp, sp, #0x10
+    str x0, [sp]
+    ldr x0, [x17, #0x8]
+    and x0, x0, #0x1
+    cbnz x0, FlexibleHandlerDisabled
+
+    ldr x0, [sp]
+    add sp, sp, #0x10
+    b ExInlineHandlerImpl
+CODE_END
+
 CODE_BEGIN InlineHandler
     adr x17, InlineHandlerEnd
     ldr x16, [x17]

@@ -79,7 +79,6 @@ bss_loop:
     // failsafe
     .word 0xdeadbeef
 
-
 .section ".rodata.mod0","a"
 
 .hidden exl_nx_module_runtime 
